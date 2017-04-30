@@ -10,6 +10,23 @@ import math
 from statsmodels.compat.python import range
 import numpy as np
 from scipy.misc import comb
+from scipy.interpolate import interp1d
+
+
+def main():
+    o=getOptions()
+    if o.pdffile:
+        global pdfi
+        pdfx,pdfy=np.loadtxt(o.pdffile,unpack=True)
+        print len(pdfy)
+        pdfy=np.cumsum(pdfy)/len(pdfy)
+        pdfx=[0]+list(pdfx)+[1.0]
+        pdfy=[0]+list(pdfy)+[1.0]
+        pdfi=interp1d(pdfy,pdfx)
+    hist,resM,resC,resL=getBootStraps(o)
+    ana=analyzeBootStraps(o,[resM,resC,resL])
+    if o.show:
+        plotResults(o,hist,ana)    
 
 def gauss_noise_prefactor(n):
     if n==0:
@@ -70,12 +87,6 @@ def mnc2cum(mnc):
 
 
 
-def main():
-    o=getOptions()
-    hist,resM,resC,resL=getBootStraps(o)
-    ana=analyzeBootStraps(o,[resM,resC,resL])
-    if o.show:
-        plotResults(o,hist,ana)    
 
 
 def getOptions():
@@ -83,7 +94,9 @@ def getOptions():
     parser.add_option("-m", dest="mean", default=0.5, type="float",
                       help="mean")
     parser.add_option("-s", dest="sigma", default=-1, type="float",
-                      help="sigma, if negative use uniform distribution")
+                      help="sigma, if negative use uniform distribution") 
+    parser.add_option("--pdf", dest="pdffile", default="", type="string",
+                      help="PDF filename")
     parser.add_option("-n", dest="n", default=20, type="int",
                       help="# of leg polys")
     parser.add_option("-B", dest="B", default=50, type="int",
@@ -106,7 +119,10 @@ def getOptions():
     return o
 
 def generateMeasurements(o):
-    if o.sigma<0:
+    if (o.pdffile):
+        tmp=np.random.uniform(0.,1.,o.N)
+        Fs=pdfi(tmp)
+    elif o.sigma<0:
         Fs=np.random.uniform(0.,1.,o.N)
     else:
         l=[]
@@ -115,6 +131,8 @@ def generateMeasurements(o):
             if (g>=0) and (g<=1):
                 l.append(g)
         Fs=np.array(l)
+
+
     if (o.noise>0):
         Fs+=np.random.normal(0.,o.noise,o.N)
     return Fs
