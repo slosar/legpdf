@@ -101,6 +101,8 @@ def getOptions():
                       help="PDF filename")
     parser.add_option("-n", dest="n", default=20, type="int",
                       help="# of leg polys")
+    parser.add_option("--lplot", dest="lplot", default=9, type="int",
+                      help="# of leg polys to plot")
     parser.add_option("-B", dest="B", default=50, type="int",
                       help="# bootstraps")
     parser.add_option("-N", dest="N", default=10000, type="int",
@@ -150,6 +152,7 @@ def getMeanF(o):
 
 def getTrueF(o, nbins):
     xx=np.linspace(0.,1.0,nbins)
+    print xx,'AA'
     if (o.pdffile):
         yy=pdft(xx)
     elif (o.sigma<0):
@@ -162,9 +165,13 @@ def getTrueF(o, nbins):
 def histX(o):
     return np.linspace(-o.he,1+o.he,o.h*(1+2*o.he))
 
+def fixpdf(p):
+    p=abs(p)
+    return p/p.sum()
+
 def deconvolveLogLike(bins,binr,thist,N):
     prop=np.zeros(len(thist))
-    bins/=bins.sum()
+    bins=fixpdf(bins)
     for b,r in zip(bins,binr):
         prop+=b*r
     #last bin
@@ -190,6 +197,7 @@ def deconvolvePDF(o,thist, work):
         for i in range(o.n):
            ## response of n-th bin
             lo,up=i*1.0/o.n,1.0*(i+1)/o.n
+            print lo,up
             if (o.noise)>0:
                 cbin=(-erf(math.sqrt(0.2e1) * (lo - xx) / o.noise / 0.2e1) / 0.2e1 +
                       erf(math.sqrt(0.2e1) * (up - xx) / o.noise / 0.2e1) / 0.2e1)
@@ -204,12 +212,15 @@ def deconvolvePDF(o,thist, work):
     else:
         binr,N=work
         
-    _,iguess=getTrueF(o,o.n)
+    ax,iguess=getTrueF(o,2*o.n+1)
+    iguess=iguess[1::2] ## these are now centered!!
+    iguess*=(1+np.random.normal(0,0.1,o.n))
+
     #iguess=np.random.uniform(0,1,o.n)
     #iguess/=iguess.sum()
 
-    toret=minimize(deconvolveLogLike,iguess,args=(binr,thist,N),method='Nelder-Mead')
-    toret=toret.x/toret.x.sum()
+    toret=minimize(deconvolveLogLike,iguess,args=(binr,thist,N),method='powell')
+    toret=fixpdf(toret.x)
     #toret=np.array(list(toret)+[1.0-toret.sum()])
     return toret,work
     
@@ -283,7 +294,7 @@ def plotResults(o,hist,oli):
     xv=histX(o)
     plt.plot (xv,hist,'r-', label='histo')
     ml=oli[2][0]
-    ls=legser(ml[:-2]) 
+    ls=legser(ml[:o.lplot]) 
     xvp=np.linspace(0,1,o.h)
     plt.plot (xvp,ls(2*xvp-1),'b--',lw=2, label='leg')
     md=oli[3][0]
