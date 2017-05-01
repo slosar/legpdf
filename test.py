@@ -5,26 +5,28 @@ from numpy.polynomial.legendre import Legendre as legser
 import LegendrePDF
 import random
 import numpy as np
-import pylab
+import matplotlib.pyplot as plt
 import math
 from statsmodels.compat.python import range
 import numpy as np
 from scipy.misc import comb
 from scipy.interpolate import interp1d
-
+from scipy.optimize import minimize
+from scipy.special import erf
 
 def main():
     o=getOptions()
     if o.pdffile:
-        global pdfi
+        global pdfi, pdft
         pdfx,pdfy=np.loadtxt(o.pdffile,unpack=True)
-        print len(pdfy)
-        pdfy=np.cumsum(pdfy)/len(pdfy)
+        cpdfy=np.cumsum(pdfy)/len(pdfy)
+        cpdfy=[0]+list(cpdfy)+[1.0]        
+        pdfy=[0]+list(pdfy)+[0.0]
         pdfx=[0]+list(pdfx)+[1.0]
-        pdfy=[0]+list(pdfy)+[1.0]
-        pdfi=interp1d(pdfy,pdfx)
-    hist,resM,resC,resL=getBootStraps(o)
-    ana=analyzeBootStraps(o,[resM,resC,resL])
+        pdft=interp1d(pdfx,pdfy)
+        pdfi=interp1d(cpdfy,pdfx)
+    hist,resM,resC,resL,resD=getBootStraps(o)
+    ana=analyzeBootStraps(o,[resM,resC,resL,resD])
     if o.show:
         plotResults(o,hist,ana)    
 
@@ -138,23 +140,94 @@ def generateMeasurements(o):
     return Fs
 
 def getMeanF(o):
+    if (o.pdffile):
+        print "Here?"
+        stop()
     if (o.sigma<0):
         return 0.5
     else:
         return math.erf(0.1e1 / o.sigma * o.mean * math.sqrt(0.2e1) / 0.2e1) / 0.2e1 - math.erf(math.sqrt(0.2e1) * (-0.1e1 + o.mean) / o.sigma / 0.2e1) / 0.2e1
+
+def getTrueF(o, nbins):
+    xx=np.linspace(0.,1.0,nbins)
+    if (o.pdffile):
+        yy=pdft(xx)
+    elif (o.sigma<0):
+        yy=np.ones(len(xx))
+    else:
+        norm=math.erf(0.1e1 / o.sigma * o.mean * math.sqrt(0.2e1) / 0.2e1) / 0.2e1 - math.erf(math.sqrt(0.2e1) * (-0.1e1 + o.mean) / o.sigma / 0.2e1) / 0.2e1
+        yy=1/np.sqrt(2*np.pi*o.sigma**2)*np.exp(-(xx-o.mean)**2/(2*o.sigma**2))/norm
+    return xx,yy
+
+def histX(o):
+    return np.linspace(-o.he,1+o.he,o.h*(1+2*o.he))
+
+def deconvolveLogLike(bins,binr,thist,N):
+    prop=np.zeros(len(thist))
+    bins/=bins.sum()
+    for b,r in zip(bins,binr):
+        prop+=b*r
+    #last bin
+    #prop+=(1.0-bins.sum())*binr[-1]
+    prop*=N
+    err2=prop
+    err2[err2<0]=1e-10
+    err2[err2==0]=1e-3 ## to avoid division by zero
+    
+    #plt.plot(thist)
+    #plt.plot(prop)
+    #plt.show()
+    chi2=((thist-prop)**2/err2).sum()
+    print chi2
+
+    return chi2
+
+
+def deconvolvePDF(o,thist, work):
+    if work is None:
+        xx=histX(o)
+        binr=[]
+        for i in range(o.n):
+           ## response of n-th bin
+            lo,up=i*1.0/o.n,1.0*(i+1)/o.n
+            if (o.noise)>0:
+                cbin=(-erf(math.sqrt(0.2e1) * (lo - xx) / o.noise / 0.2e1) / 0.2e1 +
+                      erf(math.sqrt(0.2e1) * (up - xx) / o.noise / 0.2e1) / 0.2e1)
+            else:
+                cbin=np.ones(len(xx))
+                cbin[xx<lo]=0.0
+                cbin[xx>=up]=0.0
+            cbin/=cbin.sum()
+            binr.append(cbin)
+        N=thist.sum()
+        work=(binr,N)        
+    else:
+        binr,N=work
+        
+    _,iguess=getTrueF(o,o.n)
+    #iguess=np.random.uniform(0,1,o.n)
+    #iguess/=iguess.sum()
+
+    toret=minimize(deconvolveLogLike,iguess,args=(binr,thist,N),method='Nelder-Mead')
+    toret=toret.x/toret.x.sum()
+    #toret=np.array(list(toret)+[1.0-toret.sum()])
+    return toret,work
+    
 
 def getBootStraps(o):
     p=LegendrePDF.Mom2Leg(o.n)
     resM=np.zeros((o.n, o.B))
     resC=np.zeros((o.n, o.B))
     resL=np.zeros((o.n, o.B))
+    resD=np.zeros((o.n, o.B))
     hN=o.h*(1+o.he*2)
     hist=np.zeros(hN,int)
-    meanF=getMeanF(o)
+    dwork=None
     ## bootstrap
     for b in xrange(o.B):
         nums=generateMeasurements(o)
-        hist+=np.bincount((nums*o.h+o.he*o.h).astype(int),minlength=hN)
+        chist=np.bincount((nums*o.h+o.he*o.h).astype(int),minlength=hN)
+        hist+=chist
         moms=[1.0]
         for m in range(1,o.n):
             moms.append((nums**(m)).mean())
@@ -168,16 +241,19 @@ def getBootStraps(o):
         resM[:,b]=moms
         resC[:,b]=kappa
         resL[:,b]=p.mom2leg(resM[:,b])
+        dres,dwork=deconvolvePDF(o,chist,dwork)
+        resD[:,b]=dres
+        
     hist=hist/(1.*o.B*o.N/o.h)
 
-    return hist, resM, resC, resL
+    return hist, resM, resC, resL, resD
 
 
 def analyzeBootStraps(o, li):
     oli=[]
     for res in li:
-        mm=[1]
-        for i in range(1,o.n):
+        mm=[]
+        for i in range(0,o.n):
             mm_=res[i,:].mean()
             mm.append(mm_)
 
@@ -202,35 +278,40 @@ def cov2cor(m):
 
 
 def plotResults(o,hist,oli):
-    pylab.figure(figsize=(16,16))
-    pylab.subplot(4,1,1)
-    xv=np.linspace(-o.he,1+o.he,o.h*(1+2*o.he))
-    pylab.plot (xv,hist,'r-', label='histo')
+    plt.figure(figsize=(16,16))
+    plt.subplot(5,1,1)
+    xv=histX(o)
+    plt.plot (xv,hist,'r-', label='histo')
     ml=oli[2][0]
-    ls=legser(ml) 
+    ls=legser(ml[:-2]) 
     xvp=np.linspace(0,1,o.h)
-    pylab.plot (xvp,ls(2*xvp-1),'b-', label='leg')
-    pylab.xlabel('val')
-    pylab.ylabel('p(val)')
-    pylab.legend()
+    plt.plot (xvp,ls(2*xvp-1),'b--',lw=2, label='leg')
+    md=oli[3][0]
+    xvp=np.linspace(0,1,o.n)
+    plt.plot (xvp,md*o.n,'g--',lw=2, label='decon')
+    xx,yy=getTrueF(o,100)
+    plt.plot(xx,yy,'k-',lw=1,label=True)
+    plt.xlabel('val')
+    plt.ylabel('p(val)')
+    plt.legend()
 
     s=0
-    names=['moment','cumulant','leg coeff']
+    names=['moment','cumulant','leg coeff','decon']
     for me,cov in oli:
-        pylab.subplot(4,2,3+2*s)
-        pylab.plot ([0,o.n],[0,0],'k--')
-        pylab.errorbar(range(1,o.n),me[1:],np.sqrt(cov.diagonal()[1:]))
+        plt.subplot(5,2,3+2*s)
+        plt.plot ([0,o.n],[0,0],'k--')
+        plt.errorbar(range(1,o.n),me[1:],np.sqrt(cov.diagonal()[1:]))
         if (o.sigma<0) and (s==0):
-            pylab.plot(range(1,o.n), 1./(1+np.arange(1,o.n)),'bo')
-        pylab.ylabel(names[s])
+            plt.plot(range(1,o.n), 1./(1+np.arange(1,o.n)),'bo')
+        plt.ylabel(names[s])
 
-        pylab.subplot(4,2,4+2*s)
-        pylab.imshow(cov2cor(cov), interpolation='nearest')
-        pylab.xlabel("cov matrix")
-        pylab.colorbar()
+        plt.subplot(5,2,4+2*s)
+        plt.imshow(cov2cor(cov), interpolation='nearest')
+        plt.xlabel("cov matrix")
+        plt.colorbar()
         s+=1
-    pylab.savefig("fig.pdf")
-    pylab.show()
+    plt.savefig("fig.pdf")
+    plt.show()
         
 
 if __name__=="__main__":
